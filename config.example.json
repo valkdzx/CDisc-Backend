@@ -1,0 +1,31 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "public-url": "",
+  "diagnostics-token": "",
+  "tls": {
+    "certfile": "",
+    "keyfile": ""
+  },
+  "youtube": {
+    "cookie-file": "",
+    "oauth-token-file": "",
+    "web-client-version": "2.20260828.01.00",
+    "visitor-data": "",
+    "cipher-url": "https://cipher.kikkia.dev",
+    "cipher-password": "",
+    "po-token": ""
+  },
+  "spotify": {
+    "client-id": "",
+    "client-secret": ""
+  },
+  "yandex": {
+    "token": "",
+    "quality": "hq"
+  },
+  "vk": {
+    "token": "",
+    "user-agent": "KateMobileAndroid/56 lite-460 (Android 4.4.2; SDK 19; x86; unknown Android SDK built for x86; en)"
+  }
+}
