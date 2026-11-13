@@ -13,9 +13,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULTS = {
-    "host": "0.0.0.0",
+    # Loopback unless told otherwise: a backend started without a config file
+    # should not find itself answering the internet.
+    "host": "127.0.0.1",
     "port": 8080,
     "public-url": "",
+    # When set, every route but the index wants it: `Authorization: Bearer`,
+    # `X-CDisc-Token`, or `?key=`. Empty leaves the backend open, which is
+    # what a public node is.
+    "access-token": "",
+    "limits": {
+        # Per client address. Zero switches one off.
+        "requests-per-minute": 240,
+        "concurrent-requests": 12,
+        # Broadcasts being read at once, for everybody together: each is an
+        # endless read of its own.
+        "live-streams": 24,
+        # The header a trusted reverse proxy puts the client's address in
+        # ("CF-Connecting-IP", "X-Forwarded-For"). Empty means the socket's
+        # own address, which is the only honest answer without a proxy.
+        "client-ip-header": "",
+    },
     # /streams is a diagnostic: it asks YouTube eight times per call and
     # reports whether an account is loaded. Empty means the route does not
     # exist at all, which is the right default for something reachable from
@@ -113,6 +131,39 @@ class Config:
     def diagnostics_token(self):
         return (os.environ.get("CDISC_DIAG_TOKEN")
                 or self._data.get("diagnostics-token") or "")
+
+    @property
+    def access_token(self):
+        return (os.environ.get("CDISC_ACCESS_TOKEN")
+                or self._data.get("access-token") or "")
+
+    # ------------------------------------------------------------------ limits
+
+    def _limit(self, key, env):
+        raw = os.environ.get(env)
+        if raw is None or raw == "":
+            raw = (self._data.get("limits") or {}).get(key, DEFAULTS["limits"][key])
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return DEFAULTS["limits"][key]
+
+    @property
+    def requests_per_minute(self):
+        return self._limit("requests-per-minute", "CDISC_REQUESTS_PER_MINUTE")
+
+    @property
+    def concurrent_requests(self):
+        return self._limit("concurrent-requests", "CDISC_CONCURRENT_REQUESTS")
+
+    @property
+    def live_streams(self):
+        return self._limit("live-streams", "CDISC_LIVE_STREAMS")
+
+    @property
+    def client_ip_header(self):
+        return (os.environ.get("CDISC_CLIENT_IP_HEADER")
+                or (self._data.get("limits") or {}).get("client-ip-header") or "")
 
     # --------------------------------------------------------------------- tls
 

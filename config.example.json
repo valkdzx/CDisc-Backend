@@ -2,7 +2,14 @@
   "host": "127.0.0.1",
   "port": 8080,
   "public-url": "",
+  "access-token": "",
   "diagnostics-token": "",
+  "limits": {
+    "requests-per-minute": 240,
+    "concurrent-requests": 12,
+    "live-streams": 24,
+    "client-ip-header": ""
+  },
   "tls": {
     "certfile": "",
     "keyfile": ""

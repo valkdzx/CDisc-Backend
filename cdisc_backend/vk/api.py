@@ -13,10 +13,10 @@ so there is nothing for this backend to do in between.
 """
 import logging
 import re
-import time
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import net
+from ..cache import Bounded
 from ..web import Failure
 
 log = logging.getLogger("cdisc.vk")
@@ -31,8 +31,8 @@ UNAVAILABLE = "audio_api_unavailable"
 _AUDIO = re.compile(r"(-?\d+)_(\d+)(?:_([0-9a-f]+))?")
 
 MAX_TRACKS = 1000
-_cache = {}
 CACHE_TTL = 3600
+_cache = Bounded(CACHE_TTL, 4096)
 
 
 async def _call(config, method, **params):
@@ -121,7 +121,7 @@ def describe_track(audio):
     ident = f"{audio.get('owner_id')}_{audio.get('id')}" + (f"_{key}" if key else "")
     return {
         "id": ident,
-        "title": audio.get("title") + (f" ({audio['subtitle']})"
+        "title": (audio.get("title") or "") + (f" ({audio['subtitle']})"
                                        if audio.get("subtitle") else ""),
         "artist": audio.get("artist"),
         "artists": [{"id": a.get("id"), "name": a.get("name")}
@@ -159,10 +159,10 @@ async def _audio(config, ident):
 
 async def track(config, ident):
     hit = _cache.get(("track", ident))
-    if hit and time.monotonic() - hit[0] < CACHE_TTL:
-        return hit[1]
+    if hit:
+        return hit
     described = describe_track(await _audio(config, ident))
-    _cache[("track", ident)] = (time.monotonic(), described)
+    _cache.put(("track", ident), described)
     return described
 
 

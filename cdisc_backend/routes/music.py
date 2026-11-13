@@ -218,9 +218,11 @@ async def _proxy_file(request, key, found):
 
     total = _total(upstream)
     track = tracks.get(key)
-    if track is not None or not total or total > audio.HOLD_AT_MOST:
+    if (track is not None or not total or total > audio.HOLD_AT_MOST
+            or not tracks.room_for(total)):
         # Somebody else started the same track while this one was opening, or
-        # it is too long (or too vague) to hold: served the plain way instead.
+        # it is too long (or too vague) to hold, or there is no room left to
+        # hold anything: served the plain way instead.
         upstream.release()
         if track is not None:
             return await audio._serve_held(request, track)

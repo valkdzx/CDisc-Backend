@@ -130,6 +130,10 @@ class Harvester:
         self._locks = {}
         #: runs started by warm(), held so they are not collected mid-run
         self._warming = set()
+        #: Browsers running, whichever road started them. /warm was capped
+        #: and the play path was not, so a burst of made-up restricted ids
+        #: through /audio was a burst of Chromes after all.
+        self._browsers = asyncio.Semaphore(MAX_WARMING)
 
     @property
     def enabled(self):
@@ -257,16 +261,31 @@ class Harvester:
             return held
 
         lock = self._locks.setdefault(video_id, asyncio.Lock())
-        async with lock:
-            # Somebody may have finished the run while we waited for the lock.
-            held = self.cached(video_id)
-            if held:
-                return held
+        try:
+            async with lock:
+                # Somebody may have finished the run while we waited.
+                held = self.cached(video_id)
+                if held:
+                    return held
 
-            pair = await self._run(video_id, title)
-            if pair:
-                self._pairs[video_id] = (time.time(), pair[0], pair[1])
-            return pair
+                async with self._browsers:
+                    pair = await self._run(video_id, title)
+                if pair:
+                    self._pairs[video_id] = (time.time(), pair[0], pair[1])
+                    self._expire()
+                return pair
+        finally:
+            # Kept only while somebody holds or waits on it; otherwise one
+            # lock per id ever asked about, forever.
+            if not lock.locked() and not getattr(lock, "_waiters", None):
+                self._locks.pop(video_id, None)
+
+    def _expire(self):
+        """Drops pairs past their life, so the map is not a history."""
+        now = time.time()
+        for key in [k for k, (at, _, _) in self._pairs.items()
+                    if now - at > self.config.harvest_ttl]:
+            self._pairs.pop(key, None)
 
     async def _run(self, video_id, title):
         environment = dict(os.environ)

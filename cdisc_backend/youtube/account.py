@@ -32,6 +32,7 @@ import uuid
 
 from .. import net
 from . import clients
+from .cookies import write_private
 
 log = logging.getLogger("cdisc.account")
 
@@ -130,11 +131,7 @@ class Account:
             return
         self.token_file.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.token_file.with_suffix(".tmp")
-        temporary.write_text(token + "\n", encoding="utf-8")
-        try:
-            os.chmod(temporary, 0o600)
-        except OSError:
-            pass
+        write_private(temporary, token + "\n")
         os.replace(temporary, self.token_file)
 
     # ------------------------------------------------------------- the client

@@ -12,9 +12,9 @@ returns it, and no YouTube search is made: the plugin that asks for it does its
 own matching. Behind a flag for now, because the plugins already out there read
 the matched shape.
 """
-import time
 from urllib.parse import urlencode
 
+from ..cache import Bounded
 from ..spotify import api, match
 from ..web import Failure, json
 
@@ -26,7 +26,7 @@ CACHE_TTL = 24 * 3600
 #: Track lists are cached too, and for the same reason: a client that walks an
 #: album asks for the list once per track otherwise. They are held apart from
 #: matches by kind, so that an album and a track cannot share a key.
-_cache = {}
+_cache = Bounded(CACHE_TTL, 4096)
 
 
 async def handle_spotify(request):
@@ -69,23 +69,21 @@ def _beta(request):
 async def _raw(request, identifier):
     """The raw track object, cached by its Spotify id apart from matches."""
     cached = _cache.get(("raw", identifier))
-    if cached and time.monotonic() - cached[0] < CACHE_TTL:
-        return cached[1]
+    if cached:
+        return cached
 
     found = await api.raw_track(request.app["config"], identifier)
-    _cache[("raw", identifier)] = (time.monotonic(), found)
-    return found
+    return _cache.put(("raw", identifier), found)
 
 
 async def _entity(request, kind, identifier):
     """What the link names, from the cache when it has been read before."""
     cached = _cache.get(("entity", kind, identifier))
-    if cached and time.monotonic() - cached[0] < CACHE_TTL:
-        return cached[1]
+    if cached:
+        return cached
 
     found = await api.entity(request.app["config"], kind, identifier)
-    _cache[("entity", kind, identifier)] = (time.monotonic(), found)
-    return found
+    return _cache.put(("entity", kind, identifier), found)
 
 
 def _at(entity, asked):
@@ -134,8 +132,8 @@ async def _matched(request, identifier, known=None):
     of an album and a link to that same track are one lookup between them.
     """
     cached = _cache.get(("track", identifier))
-    if cached and time.monotonic() - cached[0] < CACHE_TTL:
-        return cached[1]
+    if cached:
+        return _with_links(request, cached)
 
     config = request.app["config"]
 
@@ -151,7 +149,6 @@ async def _matched(request, identifier, known=None):
     drift = (None if want is None or not chosen.get("duration")
              else round(chosen["duration"] - want, 1))
 
-    base = _base(request)
     payload = {
         "spotify": track,
         "matched_by": how,
@@ -162,13 +159,27 @@ async def _matched(request, identifier, known=None):
             "channel": chosen["channel"],
             "duration": chosen["duration"],
             "url": f"https://www.youtube.com/watch?v={chosen['id']}",
-            "audio_url": f"{base}/audio/{chosen['id']}",
-            "proxy_audio_url": f"{base}/audio/{chosen['id']}?proxy=true",
         },
     }
 
-    _cache[("track", identifier)] = (time.monotonic(), payload)
-    return payload
+    return _with_links(request, _cache.put(("track", identifier), payload))
+
+
+def _with_links(request, payload):
+    """
+    A match, with this backend's own links added for whoever is asking now.
+
+    <p>Added on the way out rather than cached with the rest. Without a
+    `public-url` the links are built from the request's own Host, and a match
+    is kept for a day: cached together, one request naming somebody else's
+    host would have put that host in every answer until tomorrow.
+    """
+    base = _base(request)
+    video = payload["youtube"]["id"]
+    return dict(payload, youtube=dict(
+        payload["youtube"],
+        audio_url=f"{base}/audio/{video}",
+        proxy_audio_url=f"{base}/audio/{video}?proxy=true"))
 
 
 def _base(request):

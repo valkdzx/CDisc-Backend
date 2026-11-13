@@ -11,10 +11,10 @@ shipping an interpreter.
 never finished. That cost an afternoon; the comment is here so it does not cost
 another.
 """
-import time
 import urllib.parse
 
 from .. import net
+from ..cache import Bounded
 from ..web import Failure
 
 #: The public instance the CDisc plugin points at by default. Same protocol as
@@ -26,7 +26,26 @@ DEFAULT = "https://cipher.kikkia.dev"
 #: twice, and nothing here is worth serving stale.
 TTL = 300
 
-_cache = {}
+_cache = Bounded(TTL, 4096)
+
+#: Where a finished streaming URL may point. The service is somebody else's
+#: machine, and what it sends back is fetched from here and handed to players:
+#: taken on trust, it could name any address this server can reach.
+_STREAM_HOSTS = (".googlevideo.com", ".youtube.com", ".c.youtube.com")
+
+
+def _checked(url):
+    """The URL, if it is one a YouTube stream could have; a Failure if not."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        parsed, host = None, ""
+    if (parsed is None or parsed.scheme != "https" or parsed.username
+            or not any(host.endswith(suffix) for suffix in _STREAM_HOSTS)):
+        raise Failure("The cipher service returned a URL that is not YouTube's",
+                      502, "cipher")
+    return url
 
 
 def n_param(url):
@@ -50,8 +69,8 @@ async def resolve(url, player_url, base=DEFAULT, password=None):
 
     key = (player_url, scrambled)
     cached = _cache.get(key)
-    if cached and time.monotonic() - cached[0] < TTL:
-        return _swap(url, scrambled, cached[1])
+    if cached:
+        return _swap(url, scrambled, cached)
 
     headers = {}
     if password:
@@ -81,9 +100,10 @@ async def resolve(url, player_url, base=DEFAULT, password=None):
     # Cached as the value rather than the whole URL: the same `n` resolves to
     # the same thing for every URL sharing that player script, and stream URLs
     # differ in a dozen other parameters.
+    _checked(resolved)
     fresh = n_param(resolved)
     if fresh:
-        _cache[key] = (time.monotonic(), fresh)
+        _cache.put(key, fresh)
     return resolved
 
 
@@ -146,4 +166,4 @@ async def unlock(fmt, player_url, base=DEFAULT, password=None):
     resolved = payload.get("resolved_url")
     if not resolved:
         raise Failure("The cipher service returned no URL", 502, "cipher")
-    return resolved
+    return _checked(resolved)

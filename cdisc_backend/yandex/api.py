@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 
 from .. import net
+from ..cache import Bounded
 from ..web import Failure
 
 log = logging.getLogger("cdisc.yandex")
@@ -55,8 +56,8 @@ _UUID = re.compile(r"^[A-Za-z]{2}\.[0-9a-f-]{36}$")
 #: account's token on it.
 _SEGMENT = re.compile(r"[A-Za-z0-9_.:-]+")
 
-_cache = {}
 CACHE_TTL = 3600
+_cache = Bounded(CACHE_TTL, 4096)
 
 
 def _segment(value):
@@ -176,14 +177,14 @@ def describe_track(track):
 async def track(config, track_id):
     """One track, cached: a title does not change between two plays of it."""
     hit = _cache.get(("track", track_id))
-    if hit and time.monotonic() - hit[0] < CACHE_TTL:
-        return hit[1]
+    if hit:
+        return hit
 
     found = await _call(config, "GET", f"/tracks/{_segment(track_id)}")
     if not found:
         raise Failure("No such Yandex Music track", 404, "not_found")
     described = describe_track(found[0])
-    _cache[("track", track_id)] = (time.monotonic(), described)
+    _cache.put(("track", track_id), described)
     return described
 
 

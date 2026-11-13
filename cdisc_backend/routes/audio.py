@@ -47,6 +47,11 @@ async def handle_audio(request):
     # ?mode=sabr takes the long road on purpose, for testing it against a
     # video that does not need it.
     forced = query.get("mode", "").lower() == "sabr"
+    if forced:
+        # A test lever, and an expensive one: it reads the whole track into
+        # memory for a video that had a link. Behind the diagnostics token
+        # with the rest of the levers.
+        require_diagnostics(request)
 
     # A seek is a second request for a track already being read, and the
     # listener is waiting on it with the player stopped. Anything asked of
@@ -145,6 +150,12 @@ async def _stream_sabr(request, plan):
     video_id = plan["video_id"]
     track = tracks.get(video_id)
     if track is None:
+        if plan["content_length"] > tracks.MAX_TRACK:
+            raise Failure("This video is too long to be read through here",
+                          413, "too_long")
+        if not tracks.room_for(plan["content_length"]):
+            raise Failure("The backend is holding as much audio as it can; "
+                          "try again in a moment", 503, "busy")
         track = tracks.start(video_id, plan["content_length"], plan["mime_type"])
         filling = asyncio.create_task(_fill(request.app, track, plan))
         # Held, because a task nothing refers to may be collected mid-flight.
@@ -163,6 +174,23 @@ async def _stream_live(request, data):
     no middle to seek to, so each listener has their own read, and it stops
     the moment they leave rather than carrying on for nobody.
     """
+    video_id = data["video_id"]
+    app = request.app
+
+    # Every listener of a broadcast is a read of its own that never ends, so
+    # they are counted, and the one past the limit is told so.
+    allowed = app["config"].live_streams
+    if allowed and app["live"] >= allowed:
+        raise Failure("Too many broadcasts are being read here already",
+                      503, "busy")
+    app["live"] += 1
+    try:
+        return await _read_live(request, data)
+    finally:
+        app["live"] -= 1
+
+
+async def _read_live(request, data):
     video_id = data["video_id"]
 
     async def refresh():
@@ -230,8 +258,14 @@ async def _serve(request, track):
 
     first, last = 0, (total - 1) if total else None
     if wanted and total:
-        first = min(wanted[0], total - 1)
+        first = wanted[0]
         last = min(wanted[1], total - 1) if wanted[1] is not None else total - 1
+        if first >= total or last < first:
+            # Said, rather than bent into something servable: a start past the
+            # end used to come back as the last byte, and an end before the
+            # start as a negative Content-Length and a connection left open.
+            return web.Response(status=416,
+                                headers={"Content-Range": f"bytes */{total}"})
 
     response = web.StreamResponse(status=206 if (wanted and total) else 200)
     response.headers["Content-Type"] = track.mime_type
@@ -275,6 +309,11 @@ async def _fill(app, track, plan):
     try:
         async for chunk in stream.chunks():
             track.add(chunk)
+            if len(track.data) > tracks.MAX_TRACK:
+                # The format's length was wrong, or absent. Either way this
+                # is no longer a track worth a buffer.
+                failure = "The stream ran past the largest track held here"
+                break
     except Failure as e:
         failure = e.message
     except Exception as e:                                   # noqa: BLE001
@@ -326,6 +365,10 @@ async def _proxy(request, data):
 
     track = tracks.get(data["video_id"])
     if track is None:
+        if not tracks.room_for(total):
+            # No room to hold another: this one is passed through instead,
+            # which costs the listener a slower seek and the server nothing.
+            return await _pass_through(request, data)
         track = tracks.start(data["video_id"], total, data["mime_type"],
                              exact=True)
         track.opened = asyncio.get_running_loop().create_future()

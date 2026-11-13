@@ -20,6 +20,7 @@ the date on the cookie but the agreement about which one is current. So this
 absorbs what comes back and writes it down, which is the difference between a
 session that lasts weeks and one that lasts as long as the account.
 """
+import contextlib
 import hashlib
 import logging
 import os
@@ -50,6 +51,21 @@ WANTED = {
     "SIDCC", "__Secure-1PSIDCC", "__Secure-3PSIDCC",
     "__Secure-1PSIDTS", "__Secure-3PSIDTS",
 }
+
+
+def write_private(path, text):
+    """
+    Writes a file that only this user can read, from its first byte.
+
+    <p>Created with the mode rather than given it afterwards: written first
+    and chmodded second, the file sits readable by everyone for the moment in
+    between, and what is in it signs somebody in.
+    """
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(path)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as out:
+        out.write(text)
 
 
 class CookieJar:
@@ -222,10 +238,7 @@ class CookieJar:
         try:
             text = "\n".join(self._rewritten()) + "\n"
             temporary = path.with_name(path.name + ".new")
-            temporary.write_text(text, encoding="utf-8")
-            # Before the rename, so the file is never briefly readable by
-            # everyone: what is in it signs somebody in.
-            temporary.chmod(0o600)
+            write_private(temporary, text)
             os.replace(temporary, path)
         except OSError as e:
             # Not fatal: the session in memory is still good, and a backend

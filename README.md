@@ -36,6 +36,41 @@ in the untracked `config.json`, or use the corresponding environment variables
 reverse proxy, keep the application on a private interface and let the proxy
 handle public HTTPS.
 
+## Access and limits
+
+Out of the box every route answers anyone who can reach the address. With
+account tokens configured, that means anyone can play through those accounts,
+so decide which of the two this backend is:
+
+- **A private backend.** Set `access-token` (`CDISC_ACCESS_TOKEN`). Every route
+  except `GET /` then wants it as `Authorization: Bearer <token>`,
+  `X-CDisc-Token: <token>`, or `?key=<token>`. Note that the CDisc plugin
+  currently sends its backend password only with Spotify and po-token
+  requests, so a plugin pointed at a token-protected backend needs to send the
+  token on the other routes as well.
+- **A public node.** Leave `access-token` empty and rely on `limits`.
+
+`limits` in `config.json`:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `requests-per-minute` | 240 | Per client address; `0` disables |
+| `concurrent-requests` | 12 | Requests in flight per client address; `0` disables |
+| `live-streams` | 24 | Broadcasts read at once, for all clients together |
+| `client-ip-header` | empty | Header a trusted reverse proxy puts the client address in |
+
+Behind a reverse proxy, **set `client-ip-header`** (`CF-Connecting-IP` behind
+Cloudflare, `X-Forwarded-For` behind nginx or Caddy). Without it every client
+shares the proxy's address; the backend notices the forwarding headers, logs a
+warning and leaves the per-address limits off rather than throttling everyone
+together. Only name a header your proxy overwrites — on a directly exposed
+port the header is whatever the caller sends.
+
+Memory is bounded separately: proxied audio is held in a 256 MB buffer, a read
+in flight counts at its full length, a track that does not fit is passed
+straight through (or refused with `503 busy` when it can only be buffered),
+and a single buffered track is capped at 64 MB.
+
 ## Configuration and credentials
 
 `config.example.json` contains safe defaults and blank credential fields.
@@ -61,7 +96,7 @@ in this repository.
 | --- | --- |
 | `GET /` | Lists the available routes |
 | `GET /search?q=` | Searches YouTube |
-| `GET /audio/{id}` | Resolves a YouTube audio stream |
+| `GET /audio/{id}` | Resolves a YouTube audio stream (`?mode=sabr` needs the diagnostic token) |
 | `GET /info/{id}` | YouTube video metadata |
 | `GET /streams/{id}` | YouTube format diagnostics; disabled unless a diagnostic token is configured |
 | `GET /spotify?url=` | Resolves Spotify track, album, and playlist links |
@@ -80,6 +115,7 @@ Run the local checks as scripts:
 ```sh
 python test_range.py
 python test_tracks.py
+python test_access.py
 python test_live.py
 python test_e2e.py
 ```

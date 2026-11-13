@@ -28,6 +28,11 @@ log = logging.getLogger("cdisc.tracks")
 #: every track anyone played since it started.
 BUDGET = 256 * 1024 * 1024
 
+#: The most one track may take. A SABR conversation has no ceiling of its own
+#: — it is as long as the video — and a ten-hour video read into memory is
+#: the whole budget and then some, for one request anybody could have sent.
+MAX_TRACK = 64 * 1024 * 1024
+
 #: How long a finished track stays worth keeping. Long enough for a listener
 #: to seek around what they are hearing, short enough to be uninteresting.
 TTL = 600
@@ -157,11 +162,42 @@ def start(key, total, mime_type, exact=False):
     return track
 
 
-def _evict():
+def _claimed(track):
+    """What a track holds, or will: a read in flight is owed its whole length."""
+    if track.done:
+        return len(track.data)
+    return max(len(track.data), track.total or 0)
+
+
+def room_for(total):
+    """
+    Whether a new read of this size fits, after dropping what can be dropped.
+
+    <p>Eviction alone is not a bound. It only takes finished tracks, since a
+    read in flight has a listener on it — so a burst of new tracks, none of
+    them finished yet, used to sail past the budget with nothing to evict.
+    Reads in flight are counted here at their full promised length, and the
+    one that would not fit is turned away before it starts: passed straight
+    through where that is possible, refused where it is not.
+    """
+    needed = min(total or MAX_TRACK, MAX_TRACK)
+    _evict(reserve=needed)
+    return sum(_claimed(t) for t in _tracks.values()) + needed <= BUDGET
+
+
+def _evict(reserve=0):
     """Drops finished tracks, oldest first, until the budget is met again."""
-    held = sum(len(t.data) for t in _tracks.values())
+    held = sum(_claimed(t) for t in _tracks.values()) + reserve
     if held <= BUDGET:
         return
+
+    # Expired ones first, whoever asked last: they are only still here because
+    # nobody has asked for them since.
+    now = time.monotonic()
+    for track in [t for t in _tracks.values()
+                  if t.done and now - t.touched > TTL]:
+        held -= len(track.data)
+        _tracks.pop(track.key, None)
 
     # Only finished ones: a track still being read has a listener attached to
     # it, and dropping it would cut them off to make room for someone newer.

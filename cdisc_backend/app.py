@@ -9,7 +9,7 @@ from . import net
 from .config import Config
 from .routes import audio, misc, music, soundcloud, spotify
 from .spotify import api as spotify_api
-from .web import errors, require_diagnostics
+from .web import Door, door, errors, require_diagnostics
 from .youtube import account, harvest, player_script, visitor
 from .youtube.cookies import CookieJar
 
@@ -19,8 +19,11 @@ log = logging.getLogger("cdisc")
 def build_app(config=None):
     config = config or Config.load()
 
-    app = web.Application(middlewares=[errors])
+    app = web.Application(middlewares=[errors, door])
     app["config"] = config
+    app["door"] = Door()
+    #: Broadcasts being read right now, counted for config.live_streams.
+    app["live"] = 0
 
     # Read once at startup rather than per request: a cookies file is small but
     # it is also the thing an admin edits at three in the morning, and reading
@@ -141,6 +144,16 @@ async def _startup(app):
         log.info("YouTube cookies: none. The linked TV account answers for age gates.")
     else:
         log.info("YouTube account: none. Age-restricted videos will be refused.")
+
+    config = app["config"]
+    if config.access_token:
+        log.info("Access: a token is required on every route but the index")
+    elif config.has_yandex or config.has_vk or cookies.signed_in or app["account"].linked:
+        # Worth a line every start: the accounts above are spent by whoever
+        # finds this address, and nothing else here will say so.
+        log.warning("Access: open to anyone who can reach this address, with "
+                    "accounts configured. Set access-token (CDISC_ACCESS_TOKEN) "
+                    "unless this is meant to be a public node.")
 
     if cookies.signed_in:
         app["sweeper"] = asyncio.create_task(_sweep(app))
