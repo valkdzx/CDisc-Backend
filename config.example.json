@@ -4,9 +4,18 @@
   "public-url": "",
   "access-token": "",
   "diagnostics-token": "",
+  "keys": {
+    "enabled": false,
+    "required": false,
+    "file": "data/keys.json",
+    "pow-bits": 20,
+    "registrations-per-day": 3,
+    "requests-per-minute": 3000,
+    "concurrent-requests": 128
+  },
   "limits": {
-    "requests-per-minute": 240,
-    "concurrent-requests": 12,
+    "requests-per-minute": 600,
+    "concurrent-requests": 32,
     "live-streams": 24,
     "client-ip-header": ""
   },

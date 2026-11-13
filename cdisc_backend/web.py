@@ -41,7 +41,13 @@ def json(payload, status=200):
 
 
 def failed(message, status=500, code="error"):
-    return web.json_response({"error": message, "code": code}, status=status)
+    response = web.json_response({"error": message, "code": code}, status=status)
+    if status == 401:
+        # Required beside a 401, and not as a formality: Java's HTTP client —
+        # the plugin's — throws on a 401 without it instead of returning the
+        # reply, so the plugin would never learn why it was turned away.
+        response.headers["WWW-Authenticate"] = 'Bearer realm="cdisc"'
+    return response
 
 
 @web.middleware
@@ -84,12 +90,19 @@ def client_address(request):
 
 def _presented(request):
     """The access token a request carries, wherever it put it."""
+    # Its own header first: Authorization may already be carrying something
+    # else — the plugin's po-token password travels there.
+    given = request.headers.get("X-CDisc-Token", "").strip()
+    if given:
+        return given
     given = request.headers.get("Authorization", "").strip()
     if given.lower().startswith("bearer "):
         given = given[7:].strip()
-    return (given or request.headers.get("X-CDisc-Token", "").strip()
-            or request.rel_url.query.get("key", ""))
+    return given or request.rel_url.query.get("key", "")
 
+
+#: Routes that answer without a token or a key: the probe, and the way to get one.
+OPEN_PATHS = ("/", "/register")
 
 #: Headers that say a proxy stands in front of this process.
 FORWARDED = ("CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP", "Forwarded")
@@ -145,15 +158,53 @@ async def door(request, handler):
     <p>The index is left outside the token: it is what a plugin probes to
     choose a node, it says nothing a README does not, and a node that answers
     401 to "are you there" looks like one that is not.
+
+    <p>Three kinds of caller. The owner, with the access token. A server with
+    a key of its own, counted per key — see {@link keys}. And everybody else,
+    counted per address, or turned away when keys are required.
     """
     config = request.app["config"]
+    keeper = request.app["door"]
+    keys = request.app.get("keys")
+    presented = _presented(request)
+    public = request.path in OPEN_PATHS
 
     expected = config.access_token
-    if expected and request.path != "/":
-        if not secrets.compare_digest(_presented(request).encode(), expected.encode()):
-            return failed("This backend wants an access token", 401, "unauthorized")
+    owner = bool(expected) and secrets.compare_digest(presented.encode(),
+                                                      expected.encode())
+    # The diagnostics token is the owner's too: the levers behind it should
+    # not also want a key from the person who issues them.
+    diagnostic = config.diagnostics_token
+    if diagnostic and not owner:
+        shown = (request.rel_url.query.get("token")
+                 or request.headers.get("X-Diag-Token") or "")
+        owner = secrets.compare_digest(shown.encode(), diagnostic.encode())
 
-    keeper = request.app["door"]
+    # A server's own key: its limits are its own, whatever address it shares.
+    if not owner and keys is not None and keys.looks_like(presented):
+        ident, problem = keys.check(presented)
+        if problem == "key_revoked":
+            return failed("This key has been revoked", 403, problem)
+        if problem:
+            return failed("This backend does not know that key; clear it and "
+                          "register again", 401, problem)
+        request["key"] = ident
+        refused = keeper.admit("key:" + ident, config.key_requests_per_minute,
+                               config.key_concurrent_requests)
+        if refused is not None:
+            return _too_many(refused, "this key")
+        try:
+            return await handler(request)
+        finally:
+            keeper.leave("key:" + ident)
+
+    if not owner and not public:
+        if expected:
+            return failed("This backend wants an access token", 401, "unauthorized")
+        if config.keys_required:
+            return failed("This backend wants a key: POST /register",
+                          401, "key_required")
+
     if not config.client_ip_header and any(h in request.headers for h in FORWARDED):
         # Behind a proxy nobody told us about, every caller shares the proxy's
         # address, and a limit per address would be a limit on all of them
@@ -170,11 +221,23 @@ async def door(request, handler):
     refused = keeper.admit(address, config.requests_per_minute,
                            config.concurrent_requests)
     if refused is not None:
-        code, wait = refused
-        response = failed("Too many requests from this address", 429, code)
-        response.headers["Retry-After"] = str(wait)
-        return response
+        return _too_many(refused, "this address")
     try:
         return await handler(request)
     finally:
         keeper.leave(address)
+
+
+def _too_many(refused, who):
+    code, wait = refused
+    response = failed("Too many requests from %s" % who, 429, code)
+    response.headers["Retry-After"] = str(wait)
+    return response
+
+
+def honest_address(request):
+    """The client's address, or None when a proxy hides it and none is named."""
+    config = request.app["config"]
+    if not config.client_ip_header and any(h in request.headers for h in FORWARDED):
+        return None
+    return client_address(request)

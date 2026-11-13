@@ -43,19 +43,49 @@ account tokens configured, that means anyone can play through those accounts,
 so decide which of the two this backend is:
 
 - **A private backend.** Set `access-token` (`CDISC_ACCESS_TOKEN`). Every route
-  except `GET /` then wants it as `Authorization: Bearer <token>`,
-  `X-CDisc-Token: <token>`, or `?key=<token>`. Note that the CDisc plugin
-  currently sends its backend password only with Spotify and po-token
-  requests, so a plugin pointed at a token-protected backend needs to send the
-  token on the other routes as well.
-- **A public node.** Leave `access-token` empty and rely on `limits`.
+  except `GET /` then wants it as `X-CDisc-Token: <token>`,
+  `Authorization: Bearer <token>`, or `?key=<token>`.
+- **A public node.** Leave `access-token` empty, turn on `keys`, and rely on
+  the limits.
+
+### Keys: one per Minecraft server
+
+The plugin is open source, so it cannot carry a secret: anything compiled into
+it is published with it. A key here does a different job — it names a caller.
+With `keys.enabled`, a plugin asks the node for a key the first time it starts
+(`GET /register` for a challenge, `POST /register` with the solution), stores
+it in `plugins/CDisc/backend-keys.properties`, and sends it as `X-CDisc-Token`
+with every request to that node. Nobody configures anything.
+
+What that buys:
+
+- **Limits per server, not per address.** A server with a hundred players and
+  a dozen jukeboxes is a dozen streams from one address. Counted per key it
+  gets `keys.requests-per-minute` (3000) and `keys.concurrent-requests` (128);
+  callers without a key keep the tighter per-address `limits`.
+- **Revocation.** `GET /keys?token=<diagnostics-token>` lists every key with
+  its request count, last use and requests in flight;
+  `POST /keys/{id}/revoke?token=...` (and `/restore`) turns one off without
+  touching any other server.
+- **A cost to asking.** A registration takes about a second of hashing
+  (`keys.pow-bits`) and an address gets `keys.registrations-per-day`. That is
+  nothing once per server and a nuisance at a thousand keys.
+
+It does not stop a determined person from registering a key by hand; nothing
+can, for an open client. It bounds what one caller can take and lets you cut
+one off.
+
+`keys.required: true` refuses callers without a key (`401 key_required`).
+Leave it off until the plugins using the node are new enough to register;
+until then keyed and anonymous callers work side by side. Only hashes of keys
+are stored, in `keys.file` (`data/keys.json`, mode 600).
 
 `limits` in `config.json`:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `requests-per-minute` | 240 | Per client address; `0` disables |
-| `concurrent-requests` | 12 | Requests in flight per client address; `0` disables |
+| `requests-per-minute` | 600 | Per client address without a key; `0` disables |
+| `concurrent-requests` | 32 | Requests in flight per address without a key — a proxied track counts for as long as it is being sent; `0` disables |
 | `live-streams` | 24 | Broadcasts read at once, for all clients together |
 | `client-ip-header` | empty | Header a trusted reverse proxy puts the client address in |
 
@@ -103,6 +133,8 @@ in this repository.
 | `GET /soundcloud?url=` | Resolves a SoundCloud track link |
 | `GET /yandex?url=` and `/vk?url=` | Resolves music links and collections |
 | `GET /cdisc/public-youtube-data` | Returns the configured or minted YouTube visitor data |
+| `GET` and `POST /register` | Issues a per-server key, when `keys.enabled` |
+| `GET /keys`, `POST /keys/{id}/revoke` | Lists and revokes keys; diagnostic token required |
 
 Most track endpoints also have service-specific `info`, `audio`, and `search`
 routes. See the route list returned by `GET /` and the handlers under

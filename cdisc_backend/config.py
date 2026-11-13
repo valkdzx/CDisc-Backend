@@ -23,9 +23,12 @@ DEFAULTS = {
     # what a public node is.
     "access-token": "",
     "limits": {
-        # Per client address. Zero switches one off.
-        "requests-per-minute": 240,
-        "concurrent-requests": 12,
+        # Per client address, for callers without a key. Zero switches one
+        # off. A request is "in flight" for as long as its audio is being
+        # sent, so the second number is also how many tracks one address may
+        # be playing through the proxy at once.
+        "requests-per-minute": 600,
+        "concurrent-requests": 32,
         # Broadcasts being read at once, for everybody together: each is an
         # endless read of its own.
         "live-streams": 24,
@@ -39,6 +42,22 @@ DEFAULTS = {
     # exist at all, which is the right default for something reachable from
     # the internet.
     "diagnostics-token": "",
+    "keys": {
+        # Issue a key to each server that asks (POST /register) and count
+        # limits per key instead of per address. See cdisc_backend/keys.py.
+        "enabled": False,
+        # Where issued keys are remembered, relative to the project root.
+        "file": "data/keys.json",
+        # Refuse callers without a key. Leave off until the plugins in use
+        # are new enough to ask for one.
+        "required": False,
+        # What a registration costs: about a second of hashing at 20.
+        "pow-bits": 20,
+        "registrations-per-day": 3,
+        # What a key may do: a busy server's worth, not an address's.
+        "requests-per-minute": 3000,
+        "concurrent-requests": 128,
+    },
     "tls": {
         # Empty paths disable TLS in this process. Terminate TLS at a reverse
         # proxy, or supply deployment-specific paths through environment vars.
@@ -164,6 +183,54 @@ class Config:
     def client_ip_header(self):
         return (os.environ.get("CDISC_CLIENT_IP_HEADER")
                 or (self._data.get("limits") or {}).get("client-ip-header") or "")
+
+    # -------------------------------------------------------------------- keys
+
+    def _key_setting(self, key, env):
+        raw = os.environ.get(env)
+        if raw is None or raw == "":
+            raw = (self._data.get("keys") or {}).get(key, DEFAULTS["keys"][key])
+        return raw
+
+    def _key_number(self, key, env):
+        try:
+            return max(0, int(self._key_setting(key, env)))
+        except (TypeError, ValueError):
+            return DEFAULTS["keys"][key]
+
+    @staticmethod
+    def _truth(value):
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    @property
+    def keys_enabled(self):
+        return self._truth(self._key_setting("enabled", "CDISC_KEYS"))
+
+    @property
+    def keys_required(self):
+        return self.keys_enabled and self._truth(
+            self._key_setting("required", "CDISC_KEYS_REQUIRED"))
+
+    @property
+    def keys_file(self):
+        path = Path(str(self._key_setting("file", "CDISC_KEYS_FILE")))
+        return path if path.is_absolute() else (ROOT / path)
+
+    @property
+    def keys_pow_bits(self):
+        return min(32, self._key_number("pow-bits", "CDISC_KEYS_POW_BITS"))
+
+    @property
+    def keys_per_day(self):
+        return self._key_number("registrations-per-day", "CDISC_KEYS_PER_DAY")
+
+    @property
+    def key_requests_per_minute(self):
+        return self._key_number("requests-per-minute", "CDISC_KEY_REQUESTS_PER_MINUTE")
+
+    @property
+    def key_concurrent_requests(self):
+        return self._key_number("concurrent-requests", "CDISC_KEY_CONCURRENT_REQUESTS")
 
     # --------------------------------------------------------------------- tls
 

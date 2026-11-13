@@ -6,8 +6,9 @@ import logging
 from aiohttp import web
 
 from . import net
+from .keys import Keys
 from .config import Config
-from .routes import audio, misc, music, soundcloud, spotify
+from .routes import audio, misc, music, registration, soundcloud, spotify
 from .spotify import api as spotify_api
 from .web import Door, door, errors, require_diagnostics
 from .youtube import account, harvest, player_script, visitor
@@ -24,6 +25,14 @@ def build_app(config=None):
     app["door"] = Door()
     #: Broadcasts being read right now, counted for config.live_streams.
     app["live"] = 0
+    if config.keys_enabled:
+        app["keys"] = Keys(config.keys_file, config.keys_pow_bits,
+                           config.keys_per_day)
+        app.router.add_get("/register", registration.handle_challenge)
+        app.router.add_post("/register", registration.handle_register)
+        app.router.add_get("/keys", registration.handle_list)
+        app.router.add_post("/keys/{id}/{action:revoke|restore}",
+                            registration.handle_revoke)
 
     # Read once at startup rather than per request: a cookies file is small but
     # it is also the thing an admin edits at three in the morning, and reading
@@ -148,6 +157,8 @@ async def _startup(app):
     config = app["config"]
     if config.access_token:
         log.info("Access: a token is required on every route but the index")
+    elif config.keys_required:
+        log.info("Access: every caller needs a key of its own (POST /register)")
     elif config.has_yandex or config.has_vk or cookies.signed_in or app["account"].linked:
         # Worth a line every start: the accounts above are spent by whoever
         # finds this address, and nothing else here will say so.
@@ -210,6 +221,8 @@ async def _keep_fresh(app):
     tv = app["account"]
     while True:
         await asyncio.sleep(KEEPER_INTERVAL)
+        if app.get("keys") is not None:
+            app["keys"].maybe_save()
         jobs = [_quietly("Spotify token", spotify_api.renew_if_due(config)),
                 _quietly("visitor id", visitor.renew_if_due()),
                 _quietly("player script", player_script.renew_if_due())]
@@ -260,6 +273,8 @@ async def _keep_the_session(app):
     cookies = app["cookies"]
     if cookies.signed_in:
         cookies.save()
+    if app.get("keys") is not None:
+        app["keys"].save()
 
 
 async def _cleanup(app):
